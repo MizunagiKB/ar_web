@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+
+<body>
+    <video id="id_video_source" autoplay playsinline width="640" height="480" style="display:none;"></video>
+
+    <script src="./res/deps/jquery/3.6.1/jquery-3.6.1.min.js"></script>
+    <script src="./res/deps/jsartoolkit5/artoolkit.min.js"></script>
+    <script src="./res/deps/three/three.min.js"></script>
+
+    <script>
+        const camera_device_param = { "width": 640, "height": 480 };
+        const ORIENTATION_V = 0;
+        const ORIENTATION_H = 1;
+
+        const webgl_param = { "antialias": true };
+        const WEBGL_FOV = 45;
+
+        var node_screen = null;
+        var ar_instance = null;
+
+
+        const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
+
+
+        class CNodeScreen {
+            constructor(video) {
+                this.camera = new THREE.OrthographicCamera(-1, 1, -1, 1, -1, 1);
+
+                this.webgl_screen_tex = new THREE.Texture(video);
+                this.webgl_screen_tex.minFilter = THREE.LinearFilter;
+                this.webgl_screen_tex.maxFilter = THREE.LinearFilter;
+                this.webgl_screen_tex.flipY = false;
+
+                let mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(2, 2),
+                    new THREE.MeshBasicMaterial({ "map": this.webgl_screen_tex, "side": THREE.DoubleSide })
+                );
+
+                mesh.material.depthTest = false;
+                mesh.material.depthWrite = false;
+
+                this.scene = new THREE.Scene();
+                this.scene.add(mesh);
+            }
+
+            process(webgl_renderer) {
+                this.webgl_screen_tex.needsUpdate = true;
+                webgl_renderer.render(this.scene, this.camera);
+            }
+        }
+
+        class CARMarker {
+            constructor(scene) {
+                this.ar_matrix = new Float64Array(12);
+                this.root_scene = new THREE.Object3D();
+
+                this.root_scene.visible = true;
+                this.root_scene.matrixAutoUpdate = false;
+
+                let cube = new THREE.Mesh(
+                    new THREE.BoxGeometry(1, 1, 1),
+                    new THREE.MeshLambertMaterial({ "color": 0xFFFFFF, "wireframe": false })
+                );
+                this.root_scene.add(cube);
+
+                scene.add(this.root_scene);
+            }
+        }
+
+        class CARInstance {
+            constructor(video, ar) {
+                this.video = video;
+                this.ar = ar;
+                this.dict_marker = {};
+
+                this.scene = new THREE.Scene();
+
+                this.camera = new THREE.PerspectiveCamera(WEBGL_FOV, 1.0);
+                this.camera.matrixAutoUpdate = false;
+                this.camera.projectionMatrix.fromArray(this.ar.getCameraMatrix());
+            }
+
+            render() {
+                this.ar.detectMarker(this.video);
+
+                let marker_count = this.ar.getMarkerNum();
+
+                if (marker_count > 0) {
+                    for (let n = 0; n < marker_count; n++) {
+                        let marker = this.ar.getMarker(n);
+
+                        if (marker.idMatrix == -1) continue;
+
+                        if (marker.idMatrix in this.dict_marker) {
+                            this.ar.getTransMatSquare(
+                                n, 1,
+                                this.dict_marker[marker.idMatrix].ar_matrix
+                            );
+                            this.ar.arglCameraViewRHf(
+                                this.ar.transMatToGLMat(this.dict_marker[marker.idMatrix].ar_matrix),
+                                this.dict_marker[marker.idMatrix].root_scene.matrix.elements
+                            );
+                        } else {
+                            this.dict_marker[marker.idMatrix] = new CARMarker(this.scene);
+                        }
+                    }
+                }
+
+                this.webgl_renderer.autoClear = false;
+                this.webgl_renderer.clear();
+
+                node_screen.process(this.webgl_renderer);
+                this.webgl_renderer.render(this.scene, this.camera);
+            }
+
+            main() {
+                this.webgl_renderer = new THREE.WebGLRenderer(webgl_param);
+                this.webgl_renderer.setSize(camera_device_param.width, camera_device_param.height);
+                document.body.appendChild(this.webgl_renderer.domElement);
+
+                node_screen = new CNodeScreen(this.video);
+            }
+        }
+
+
+        // ---------------------------------------------------------- method(s)
+        function update() {
+            requestAnimationFrame(update);
+            ar_instance.render();
+        }
+
+
+        // ---------------------------------------------------------- method(s)
+        function get_screen_orientation() {
+            let angle = screen && screen.orientation && screen.orientation.angle;
+            if (angle === undefined) {
+                angle = window.orientation;
+            }
+
+            if (angle == 0) { return ORIENTATION_V; } else { return ORIENTATION_H; }
+        }
+
+
+        // ---------------------------------------------------------- method(s)
+        function update_param(dict_param) {
+            for (let arch of ["iphone", "ipad", "ios", "android"]) {
+                if (navigator.userAgent.toLowerCase().includes(arch)) {
+                    dict_param["video"]["facingMode"] = "environment";
+                    break;
+                }
+            }
+        }
+
+
+        function init() {
+
+            let dict_param = {
+                "audio": false,
+                "video": camera_device_param,
+            };
+
+            update_param(dict_param);
+
+            navigator.mediaDevices.getUserMedia(dict_param).then(function (stream) {
+                let video = $("#id_video_source").get(0);
+                video.srcObject = stream;
+                video.onclick = function () { video.play(); };
+                video.play();
+
+                let camera_param = new ARCameraParam(
+                    "./res/camera_para.dat",
+                    function (evt) {
+                        // http://www.artoolkitx.org/jsartoolkit5/
+                        ar = new ARController(camera_device_param.width, camera_device_param.height, camera_param);
+                        ar.setPatternDetectionMode(artoolkit.AR_TEMPLATE_MATCHING_COLOR_AND_MATRIX);
+                        ar.setMatrixCodeType(artoolkit.AR_MATRIX_CODE_4x4_BCH_13_9_3);
+
+                        ar_instance = new CARInstance(video, ar);
+                        ar_instance.main();
+
+                        evt_resize();
+                        requestAnimationFrame(update);
+                    },
+                    function (evt) { }
+                );
+            });
+        }
+
+        // -------------------------------------------------------- callback(s)
+        function evt_resize() {
+            if (!ar_instance) return;
+            if (!ar_instance.webgl_renderer) return;
+            if (!node_screen) return;
+
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            const aspect = w / h;
+            const capture_aspect = camera_device_param.width / camera_device_param.height;
+
+            ar_instance.webgl_renderer.setPixelRatio(window.devicePixelRatio);
+            ar_instance.webgl_renderer.setSize(w, h);
+
+            console.log("RESIZE");
+
+            if (aspect > capture_aspect) {
+                let r1 = h * capture_aspect;
+                let r2 = w / r1;
+
+                node_screen.camera.left = -r2;
+                node_screen.camera.right = r2;
+                node_screen.camera.top = -1;
+                node_screen.camera.bottom = 1;
+
+                ar_instance.camera.fov = 45;
+                ar_instance.camera.aspect = aspect;
+            } else {
+                let r1 = w * 0.75;
+                let r2 = h / r1;
+
+                node_screen.camera.left = -1;
+                node_screen.camera.right = 1;
+                node_screen.camera.top = -r2;
+                node_screen.camera.bottom = r2;
+
+                ar_instance.camera.fov = clamp(50 * (h / w), 45, 90);
+                ar_instance.camera.aspect = aspect;
+
+                //console.log(camera.fov);
+            }
+
+            ar_instance.camera.updateProjectionMatrix();
+            node_screen.camera.updateProjectionMatrix();
+        }
+
+        window.onload = function () {
+            init();
+            window.addEventListener("resize", evt_resize);
+        }
+    </script>
+</body>
+
+</html>
