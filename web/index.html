@@ -21,22 +21,25 @@
 
     <script>
         const camera_device_param = { "width": 640, "height": 480 };
+        const DEVICE_CAMERA_F35 = 44;
+        const DEVICE_SENSOR_W = 4;
         const ORIENTATION_V = 0;
         const ORIENTATION_H = 1;
 
         const webgl_param = { "antialias": true };
         const WEBGL_FOV = 45;
 
-        var node_screen = null;
         var ar_instance = null;
-
 
         const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
 
-
         class CNodeScreen {
             constructor(video) {
+
+                this.scene = new THREE.Scene();
+
                 this.camera = new THREE.OrthographicCamera(-1, 1, -1, 1, -1, 1);
+                this.scene.add(this.camera);
 
                 this.webgl_screen_tex = new THREE.Texture(video);
                 this.webgl_screen_tex.minFilter = THREE.LinearFilter;
@@ -51,7 +54,6 @@
                 mesh.material.depthTest = false;
                 mesh.material.depthWrite = false;
 
-                this.scene = new THREE.Scene();
                 this.scene.add(mesh);
             }
 
@@ -90,6 +92,9 @@
                 this.camera = new THREE.PerspectiveCamera(WEBGL_FOV, 1.0);
                 this.camera.matrixAutoUpdate = false;
                 this.camera.projectionMatrix.fromArray(this.ar.getCameraMatrix());
+                this.scene.add(this.camera);
+
+                this.node_screen = null;
             }
 
             render() {
@@ -121,7 +126,7 @@
                 this.webgl_renderer.autoClear = false;
                 this.webgl_renderer.clear();
 
-                node_screen.process(this.webgl_renderer);
+                this.node_screen.process(this.webgl_renderer);
                 this.webgl_renderer.render(this.scene, this.camera);
             }
 
@@ -130,7 +135,49 @@
                 this.webgl_renderer.setSize(camera_device_param.width, camera_device_param.height);
                 document.body.appendChild(this.webgl_renderer.domElement);
 
-                node_screen = new CNodeScreen(this.video);
+                this.node_screen = new CNodeScreen(this.video);
+
+                this.evt_resize();
+            }
+
+            evt_update() { this.render(); }
+
+            evt_resize() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                const screen_aspect = w / h;
+                const device_aspect_wh = camera_device_param.width / camera_device_param.height;
+                const device_aspect_hw = camera_device_param.height / camera_device_param.width;
+                const v = h / (camera_device_param.height * (w / camera_device_param.width));
+                const fov = calc_fov(v);
+
+                this.webgl_renderer.setPixelRatio(window.devicePixelRatio);
+                this.webgl_renderer.setSize(w, h);
+
+                if (screen_aspect > device_aspect_wh) {
+                    let param = w / (h * device_aspect_wh);
+
+                    this.node_screen.camera.left = -param;
+                    this.node_screen.camera.right = param;
+                    this.node_screen.camera.top = -1;
+                    this.node_screen.camera.bottom = 1;
+
+                    this.camera.fov = 45;
+                    this.camera.aspect = screen_aspect;
+                } else {
+                    let param = h / (w * device_aspect_hw);
+
+                    this.node_screen.camera.left = -1;
+                    this.node_screen.camera.right = 1;
+                    this.node_screen.camera.top = -param;
+                    this.node_screen.camera.bottom = param;
+
+                    this.camera.fov = fov;
+                    this.camera.aspect = screen_aspect;
+                }
+
+                this.camera.updateProjectionMatrix();
+                this.node_screen.camera.updateProjectionMatrix();
             }
         }
 
@@ -138,7 +185,9 @@
         // ---------------------------------------------------------- method(s)
         function update() {
             requestAnimationFrame(update);
-            ar_instance.render();
+
+            if (!ar_instance) return;
+            ar_instance.evt_update();
         }
 
 
@@ -153,7 +202,6 @@
         }
 
 
-        // ---------------------------------------------------------- method(s)
         function update_param(dict_param) {
             for (let arch of ["iphone", "ipad", "ios", "android"]) {
                 if (navigator.userAgent.toLowerCase().includes(arch)) {
@@ -189,9 +237,6 @@
 
                         ar_instance = new CARInstance(video, ar);
                         ar_instance.main();
-
-                        evt_resize();
-                        requestAnimationFrame(update);
                     },
                     function (evt) { }
                 );
@@ -199,54 +244,28 @@
         }
 
         // -------------------------------------------------------- callback(s)
+        function calc_fov(param) {
+            const f35 = DEVICE_CAMERA_F35;
+            const sw = DEVICE_SENSOR_W;
+            const dw = sw * param;
+            const f = f35 * sw / 36;
+            const fov_r = 2 * Math.atan(dw / (2 * f))
+
+            return fov_r * (180 / Math.PI);
+        }
+
+
         function evt_resize() {
             if (!ar_instance) return;
             if (!ar_instance.webgl_renderer) return;
-            if (!node_screen) return;
 
-            const w = window.innerWidth;
-            const h = window.innerHeight;
-            const aspect = w / h;
-            const capture_aspect = camera_device_param.width / camera_device_param.height;
-
-            ar_instance.webgl_renderer.setPixelRatio(window.devicePixelRatio);
-            ar_instance.webgl_renderer.setSize(w, h);
-
-            console.log("RESIZE");
-
-            if (aspect > capture_aspect) {
-                let r1 = h * capture_aspect;
-                let r2 = w / r1;
-
-                node_screen.camera.left = -r2;
-                node_screen.camera.right = r2;
-                node_screen.camera.top = -1;
-                node_screen.camera.bottom = 1;
-
-                ar_instance.camera.fov = 45;
-                ar_instance.camera.aspect = aspect;
-            } else {
-                let r1 = w * 0.75;
-                let r2 = h / r1;
-
-                node_screen.camera.left = -1;
-                node_screen.camera.right = 1;
-                node_screen.camera.top = -r2;
-                node_screen.camera.bottom = r2;
-
-                ar_instance.camera.fov = clamp(50 * (h / w), 45, 90);
-                ar_instance.camera.aspect = aspect;
-
-                //console.log(camera.fov);
-            }
-
-            ar_instance.camera.updateProjectionMatrix();
-            node_screen.camera.updateProjectionMatrix();
+            ar_instance.evt_resize();
         }
 
         window.onload = function () {
             init();
             window.addEventListener("resize", evt_resize);
+            requestAnimationFrame(update);
         }
     </script>
 </body>
